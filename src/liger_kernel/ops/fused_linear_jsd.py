@@ -178,6 +178,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
         jsd_beta: float = 0.5,
         ignore_index: int = -100,
         temperature: float = 1.0,
+        reduction: str = "mean",
     ):
         """
         Args:
@@ -212,6 +213,7 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
             ignore_index,
             has_label,
             temperature,
+            reduction,
         )
         # downcast to dtype and store for backward
         ctx.save_for_backward(
@@ -225,4 +227,4 @@ class LigerFusedLinearJSDFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         (grad_input, grad_weight) = ctx.saved_tensors
         grad_input, grad_weight = fused_linear_jsd_backward(grad_output, grad_input, grad_weight)
-        return (grad_input, grad_weight, None, None, None, None, None, None)
+        return (grad_input, grad_weight, None, None, None, None, None, None, None)

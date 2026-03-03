@@ -25,6 +25,7 @@ def _jsd_kernel(
     n_cols,
     BLOCK_SIZE: tl.constexpr,
     HAS_LABEL: tl.constexpr,
+    reduction: tl.constexpr,
 ):
     # JSD(P || Q) = (KL(P || M) + KL(Q || M)) / 2, M = (1/2) * (P + Q) = (1/2) * (e ^ Y + e ^ X)
     #             = sum(P * log P + Q * log Q - 2 * M * log M) / 2
@@ -84,10 +85,11 @@ def _jsd_kernel(
             loss = beta_P * Y + one_minus_beta_Q * X - M * log_M
             dX = one_minus_beta_Q * (X - log_M)
 
-        # Pre-compute scaling factor
-        scale = 1.0 / n_non_ignore
-        loss = loss * scale
-        dX = dX * scale
+        if reduction == "mean":
+            # Pre-compute scaling factor
+            scale = 1.0 / n_non_ignore
+            loss = loss * scale
+            dX = dX * scale
 
         tl.store(loss_ptr + offsets, loss, mask=mask)
         tl.store(dX_ptr + offsets, dX, mask=mask)
@@ -96,7 +98,7 @@ def _jsd_kernel(
 MAX_FUSED_SIZE = 4096 if infer_device() == "xpu" else 65536
 
 
-def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
+def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label, reduction):
     BT, V = _input.shape
     n_rows = BT
     BLOCK_SIZE = min(MAX_FUSED_SIZE, triton.next_power_of_2(V))
@@ -125,9 +127,11 @@ def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label):
         n_cols=V,
         BLOCK_SIZE=BLOCK_SIZE,
         HAS_LABEL=has_label,
+        reduction=reduction,
     )
 
-    loss = torch.sum(loss)
+    if not reduction == "none":
+        loss = torch.sum(loss)
     return loss.to(_input.dtype), dX
 
 
@@ -135,6 +139,9 @@ def jsd_backward(dX, grad_output):
     # If jsd is the last layer, grad_output is 1.0. Skip the mul to save time
     if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
         return dX
+    # If reduction is 'none'. (Copy existing logic from cross_entropy_backward.)
+    elif grad_output.ndim > 0:
+        return dX * grad_output.unsqueeze(dim=1)
     else:
         return grad_output * dX
 
@@ -163,6 +170,7 @@ class LigerJSDFunction(torch.autograd.Function):
         shift_labels: Optional[torch.Tensor] = None,
         beta: float = 0.5,
         ignore_index: int = -100,
+        reduction: str = "mean",
     ) -> torch.Tensor:
         """
         Args:
@@ -183,7 +191,7 @@ class LigerJSDFunction(torch.autograd.Function):
             shift_labels = shift_labels.contiguous()
             has_label = True
 
-        loss, dX = jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label)
+        loss, dX = jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label, reduction)
         ctx.save_for_backward(dX)
         return loss
 
@@ -194,6 +202,7 @@ class LigerJSDFunction(torch.autograd.Function):
         dX = jsd_backward(dX, grad_output)
         return (
             dX,
+            None,
             None,
             None,
             None,
