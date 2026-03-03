@@ -26,6 +26,7 @@ def fused_linear_jsd_forward(
     ignore_index,
     has_label,
     temperature,
+    reduction,
 ):
     device = student_input.device
     dtype = student_input.dtype
@@ -101,6 +102,7 @@ def fused_linear_jsd_forward(
             n_cols=V,
             BLOCK_SIZE=BLOCK_SIZE,
             HAS_LABEL=has_label,
+            reduction=reduction,
         )
         loss_1d[start_idx:end_idx] = loss_1d_slice
         # gradients of prob_chunk in place, shape: chunk_size x V
@@ -118,11 +120,17 @@ def fused_linear_jsd_forward(
         if grad_weight is not None:
             grad_weight.add_(student_logits_chunk.t() @ student_input_chunk)
 
-    loss = torch.sum(loss_1d)
+    # Returns per-token JSDs. (This is different from torch.nn.KLDivLoss with reduction='none'.)
+    if reduction == "none":
+        loss = torch.sum(loss_1d, dim=1)
+    else:
+        loss = torch.sum(loss_1d)
     return loss, grad_input, grad_weight
 
 
 def fused_linear_jsd_backward(grad_output, grad_input, grad_weight):
+    # Supporting backward with reduction='none' will require more complicated handling of grad_input and grad_weight.
+    assert grad_output.ndim == 0, "FLJSD backward unsupported with reduction='none'."
     # If JSD is the last layer, grad_output is 1.0. Skip the mul to save time
     if torch.ne(grad_output, torch.tensor(1.0, device=grad_output.device)):
         # We use a Triton kernel instead of a PyTorch operation because modifying inputs in-place

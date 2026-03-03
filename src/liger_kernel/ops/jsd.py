@@ -130,7 +130,10 @@ def jsd_forward(_input, target, shift_labels, beta, ignore_index, has_label, red
         reduction=reduction,
     )
 
-    if not reduction == "none":
+    # Returns per-token JSDs. (This is different from torch.nn.KLDivLoss with reduction='none'.)
+    if reduction == "none":
+        loss = torch.sum(loss, dim=1)
+    else:
         loss = torch.sum(loss)
     return loss.to(_input.dtype), dX
 
@@ -139,7 +142,7 @@ def jsd_backward(dX, grad_output):
     # If jsd is the last layer, grad_output is 1.0. Skip the mul to save time
     if torch.equal(grad_output, torch.tensor(1.0, device=grad_output.device)):
         return dX
-    # If reduction is 'none'. (Copy existing logic from cross_entropy_backward.)
+    # If reduction is 'none'. (Reusing existing logic from cross_entropy_backward.)
     elif grad_output.ndim > 0:
         return dX * grad_output.unsqueeze(dim=1)
     else:
